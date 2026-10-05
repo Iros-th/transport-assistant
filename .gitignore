@@ -9,3 +9,4 @@ temp_test_dir/
 *.backup
 *.broken
 node_modules/
+.venv
