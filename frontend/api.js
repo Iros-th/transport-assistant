@@ -28,28 +28,63 @@ export function getSeededRandom(seedStr) {
     return rand;
 }
 
+// A small, offline station index keeps the planner usable when address lookup
+// is unavailable. These are real places; arbitrary addresses still use Photon.
+const LOCAL_PLACES = [
+    { name: 'Nørreport St.', context: 'København', lat: 55.6833, lon: 12.5714 },
+    { name: 'DTU Lyngby', context: 'Lyngby', lat: 55.7861, lon: 12.5235 },
+    { name: 'København H', context: 'København · Hovedbanegården', lat: 55.6727, lon: 12.5647 },
+    { name: 'Østerport St.', context: 'København', lat: 55.6926, lon: 12.5876 },
+    { name: 'Nørrebro St.', context: 'København', lat: 55.7005, lon: 12.5378 },
+    { name: 'Vesterport St.', context: 'København', lat: 55.6759, lon: 12.5618 },
+    { name: 'Kongens Nytorv St.', context: 'København', lat: 55.6794, lon: 12.5851 },
+    { name: 'Frederiksberg St.', context: 'Frederiksberg', lat: 55.6810, lon: 12.5327 },
+    { name: 'Ørestad St.', context: 'København', lat: 55.6280, lon: 12.5795 },
+    { name: 'Lyngby St.', context: 'Lyngby', lat: 55.7705, lon: 12.5036 },
+    { name: 'Hellerup St.', context: 'Hellerup', lat: 55.7301, lon: 12.5653 },
+    { name: 'Københavns Lufthavn', context: 'Kastrup · Copenhagen Airport', lat: 55.6298, lon: 12.6490 }
+];
+const normalizePlace = value => value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ø/g, 'o').replace(/æ/g, 'ae').trim();
+
+export function searchLocalPlaces(query) {
+    const term = normalizePlace(query || '');
+    if (term.length < 2) return [];
+    return LOCAL_PLACES.filter(place => normalizePlace(`${place.name} ${place.context}`).includes(term)).slice(0, 6);
+}
+
 export async function geocode(query) {
-    if (!query || query.length < 2) return [];
+    query = (query || '').trim();
+    if (query.length < 2) return [];
+    const local = searchLocalPlaces(query);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
     try {
-        const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=5&lat=55.68&lon=12.57`);
-        if (!res.ok) throw new Error('Photon error');
+        // Use our backend when served over HTTP; file previews can call Photon.
+        const remoteUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=5&lat=55.68&lon=12.57`;
+        const hasBackend = typeof location !== 'undefined' && location.protocol !== 'file:';
+        let res = await fetch(hasBackend ? `/api/geocode?q=${encodeURIComponent(query)}` : remoteUrl, { signal: controller.signal });
+        // A standalone static server has no API. Preserve that preview path.
+        if (hasBackend && res.status === 404) res = await fetch(remoteUrl, { signal: controller.signal });
+        if (!res.ok) throw new Error('Address lookup unavailable');
         const data = await res.json();
-        return data.features.map(f => ({
-            name: f.properties.name,
-            context: [f.properties.street, f.properties.city].filter(Boolean).join(', '),
-            lat: f.geometry.coordinates[1],
-            lon: f.geometry.coordinates[0]
-        }));
-    } catch (e) {
-        console.warn('Geocoding fallback', e);
-        // Minimal fallback
-        if (query.toLowerCase().includes('nørreport')) {
-            return [{ name: 'Nørreport St.', context: 'København', lat: 55.683, lon: 12.571 }];
+        const remote = (data.features || []).flatMap(feature => {
+            const props = feature.properties || {};
+            const [lon, lat] = feature.geometry?.coordinates || [];
+            const street = [props.street, props.housenumber].filter(Boolean).join(' ');
+            const name = props.name || street || props.city;
+            if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) return [];
+            return [{ name, context: [street !== name ? street : '', props.postcode, props.city].filter(Boolean).join(', '), lat, lon }];
+        });
+        const combined = [...local];
+        for (const place of remote) {
+            if (!combined.some(item => normalizePlace(item.name) === normalizePlace(place.name) && Math.abs(item.lat - place.lat) < .001 && Math.abs(item.lon - place.lon) < .001)) combined.push(place);
         }
-        if (query.toLowerCase().includes('dtu')) {
-            return [{ name: 'DTU', context: 'Lyngby', lat: 55.786, lon: 12.523 }];
-        }
-        return [];
+        return combined.slice(0, 8);
+    } catch {
+        local.lookupUnavailable = true;
+        return local;
+    } finally {
+        clearTimeout(timeout);
     }
 }
 

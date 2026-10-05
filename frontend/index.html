@@ -2,16 +2,16 @@
 <html lang="da">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Transport Assistant</title>
-    
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    
+
     <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-    
+
     <link rel="stylesheet" href="styles.css">
     <link rel="manifest" href="manifest.webmanifest">
     <meta name="theme-color" content="#07080A">
@@ -22,41 +22,47 @@
     <div class="app-container">
         <!-- Sidebar / Bottom Sheet -->
         <main class="panel" id="panel">
-            <div class="panel-handle-wrapper" id="panel-handle">
-                <div class="panel-handle"></div>
-            </div>
+            <button type="button" class="panel-handle-wrapper" id="panel-handle" aria-label="Udvid rejsepanelet" aria-expanded="false">
+                <span class="panel-handle"></span>
+            </button>
             <div class="panel-content">
                 <header class="header">
                     <h1 class="logo">Transport Assistant</h1>
                     <div id="offline-banner" class="hidden">Offline</div>
                 </header>
 
+                <div class="demo-notice"><span class="demo-dot"></span><div><strong>Simuleret trængsel og parkering</strong><p>Vejledende tal – ikke live målinger.</p></div></div>
+
                 <form id="plan-form" class="search-section">
                     <div class="input-group">
                         <div class="location-inputs">
+                            <label class="field-label" for="origin-input">Fra</label>
                             <div class="input-wrapper">
                                 <div class="dot-origin"></div>
-                                <input type="text" id="origin-input" placeholder="FRA: Nørreport St." autocomplete="off" role="combobox" aria-expanded="false">
-                                <button class="clear-btn" id="clear-origin" aria-label="Clear Origin" hidden>×</button>
+                                <input type="text" id="origin-input" placeholder="Station eller adresse" aria-controls="origin-autocomplete" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false">
+                                <button type="button" class="clear-btn" id="clear-origin" aria-label="Ryd startsted" hidden>×</button>
                                 <ul id="origin-autocomplete" class="autocomplete-list hidden" role="listbox"></ul>
                             </div>
-                            <div class="connection-line"></div>
+
+                            <label class="field-label" for="dest-input">Til</label>
                             <div class="input-wrapper">
                                 <div class="dot-dest"></div>
-                                <input type="text" id="dest-input" placeholder="TIL: DTU Lyngby" autocomplete="off" role="combobox" aria-expanded="false">
-                                <button class="clear-btn" id="clear-dest" aria-label="Clear Destination" hidden>×</button>
+                                <input type="text" id="dest-input" placeholder="Hvor skal du hen?" aria-controls="dest-autocomplete" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false">
+                                <button type="button" class="clear-btn" id="clear-dest" aria-label="Ryd destination" hidden>×</button>
                                 <ul id="dest-autocomplete" class="autocomplete-list hidden" role="listbox"></ul>
                             </div>
                         </div>
-                        <button id="swap-btn" class="icon-btn" aria-label="Swap origin and destination">
+                        <button type="button" id="swap-btn" class="icon-btn" aria-label="Byt start og destination">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8v12M17 20l-4-4M17 20l4-4"/></svg>
                         </button>
                     </div>
 
+                    <button type="button" id="location-btn" class="text-btn">↗ Brug min placering</button>
+                    <p id="form-message" class="form-message hidden" role="alert"></p>
                     <div class="controls-row">
                         <div class="segmented-control" role="group" aria-label="Prioritet">
                             <button type="button" id="priority-transit" class="seg-btn" aria-pressed="true" value="transit">Mindst fyldt transport</button>
-                            <button type="button" id="priority-driving" class="seg-btn" aria-pressed="false" value="driving">Sikker parkering</button>
+                            <button type="button" id="priority-driving" class="seg-btn" aria-pressed="false" value="driving">Mest ledig parkering</button>
                         </div>
                     </div>
 
@@ -65,13 +71,15 @@
                             <button type="button" id="time-now" class="seg-btn" aria-pressed="true" value="now">Nu</button>
                             <button type="button" id="time-later" class="seg-btn" aria-pressed="false" value="later">Vælg tid</button>
                         </div>
-                        <input type="datetime-local" id="time-picker" class="hidden">
+
                     </div>
-                    
+
+                    <div id="scheduled-time" class="hidden"><label class="field-label" for="time-picker">Afgangstid</label><input type="datetime-local" id="time-picker"><p id="time-summary" class="helper-text"></p></div>
                     <button id="search-btn" class="primary-btn" type="submit">Find rejse</button>
                 </form>
 
-                <div id="results-container" class="results-container">
+                <div id="results-container" class="results-container" aria-busy="false">
+                    <p id="results-status" class="sr-only" role="status" aria-live="polite"></p>
                     <div id="empty-state" class="state-message">
                         Vælg din start og slut destination.
                     </div>
@@ -83,13 +91,13 @@
                         <p id="error-msg">Noget gik galt.</p>
                         <button id="retry-btn" class="secondary-btn">Prøv igen</button>
                     </div>
-                    
+
                     <div id="routes-content" class="hidden">
                         <div class="results-header">
-                            <h2>Anbefalet</h2>
+                            <h2>Din bedste rejse</h2>
                         </div>
                         <div id="recommended-route"></div>
-                        
+
                         <div class="results-header" style="margin-top: 16px;">
                             <h2>Alternativer</h2>
                         </div>
@@ -98,14 +106,17 @@
                 </div>
             </div>
         </main>
-        
+
         <!-- Map -->
-        <div id="map" class="map-container"></div>
+        <div id="map" class="map-container" role="region" aria-label="Kort over den valgte rejse"></div>
+        <div id="map-status" class="map-status" role="status">Indlæser kort…</div>
+        <button type="button" id="map-toggle" class="map-toggle" aria-controls="panel">Vis kort</button>
     </div>
 
     <!-- Templates -->
     <template id="tpl-route-card">
-        <div class="route-card" tabindex="0" role="button">
+        <article class="route-card">
+            <div class="card-badges"><span class="recommendation-badge hidden">Anbefalet</span><span class="selected-badge hidden">Vist på kort</span></div>
             <div class="card-main">
                 <div class="card-left">
                     <div class="route-modes"></div>
@@ -116,19 +127,22 @@
                     <div class="route-departure mono"></div>
                 </div>
             </div>
+            <div class="route-summary"></div>
+            <div class="route-comparison"></div>
             <div class="fill-bar-wrapper">
                 <div class="fill-bar-label">
-                    <span>Forventet kapacitet</span>
+                    <span class="capacity-label"></span>
                     <span class="simulated-badge">Simuleret</span>
                 </div>
                 <div class="fill-bar-container">
                     <div class="fill-bar"></div>
                 </div>
             </div>
+            <button type="button" class="route-expand" aria-expanded="false"><span>Vis rejsetrin</span><span class="expand-chevron" aria-hidden="true">⌄</span></button>
             <div class="leg-timeline hidden"></div>
-        </div>
+        </article>
     </template>
-    
+
     <template id="tpl-leg-step">
         <div class="leg-step">
             <div class="leg-time mono"></div>

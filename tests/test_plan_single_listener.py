@@ -11,7 +11,7 @@ FRONTEND = pathlib.Path(__file__).resolve().parents[1] / "frontend"
 
 def test_plan_form_has_exactly_one_submit_listener():
     app = (FRONTEND / "app.js").read_text(encoding="utf-8")
-    bindings = re.findall(r'\$\("#plan-form"\)\.addEventListener\("submit"', app)
+    bindings = re.findall(r'''\$\(['"]#?plan-form['"]\)\.addEventListener\(['"]submit['"]''', app)
     assert len(bindings) == 1
 
 

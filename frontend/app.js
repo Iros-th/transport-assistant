@@ -1,468 +1,463 @@
-import { geocode, fetchRoutes } from './api.js';
+import { geocode, fetchRoutes, searchLocalPlaces } from './api.js';
 
 let map;
+let mapReady = false;
+let selectedRoute;
 let routeLayers = [];
 let mapMarkers = [];
+let searchVersion = 0;
+let setSheet = () => {};
+let sheetPosition = 'half';
+const state = { origin: null, dest: null, priority: 'transit', timeIso: new Date().toISOString(), later: false };
+const $ = id => document.getElementById(id);
+const modeNames = { BUS: 'Bus', TRAM: 'Letbane', RAIL: 'Tog', SUBWAY: 'Metro', FERRY: 'Færge', WALK: 'Gå', CAR: 'Bil' };
+const clock = value => new Date(value).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' });
+const walking = route => route.legs.filter(leg => leg.mode === 'WALK').reduce((sum, leg) => sum + leg.duration, 0);
 
-const state = {
-    origin: null,
-    dest: null,
-    priority: 'transit',
-    timeIso: new Date().toISOString()
-};
+function formMessage(message = '') {
+    $('form-message').textContent = message;
+    $('form-message').classList.toggle('hidden', !message);
+}
 
-let debounceTimer;
+function invalidateResults() {
+    ++searchVersion;
+    selectedRoute = null;
+    showState('empty');
+    clearMapRoute();
+}
+
+function updateClearButtons() {
+    $('clear-origin').hidden = !$('origin-input').value;
+    $('clear-dest').hidden = !$('dest-input').value;
+}
 
 document.addEventListener('DOMContentLoaded', () => {
-    initMap();
     initUI();
+    initMap();
     registerServiceWorker();
-    
-    // Prefill default example
     state.origin = { name: 'Nørreport St.', lat: 55.6833, lon: 12.5714 };
     state.dest = { name: 'DTU Lyngby', lat: 55.7861, lon: 12.5235 };
-    document.getElementById('origin-input').value = state.origin.name;
-    document.getElementById('dest-input').value = state.dest.name;
+    $('origin-input').value = state.origin.name;
+    $('dest-input').value = state.dest.name;
+    updateClearButtons();
     triggerSearch();
 });
 
 function initMap() {
-    const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const styleUrl = isDark ? 'https://tiles.openfreemap.org/styles/dark' : 'https://tiles.openfreemap.org/styles/liberty';
-    
-    map = new maplibregl.Map({
-        container: 'map',
-        style: styleUrl,
-        center: [12.5683, 55.6761], // Copenhagen
-        zoom: 12,
-        attributionControl: false
-    });
+    try {
+        if (!window.maplibregl) throw new Error('Map library unavailable');
+        const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        map = new maplibregl.Map({
+            container: 'map',
+            style: `https://tiles.openfreemap.org/styles/${dark ? 'dark' : 'liberty'}`,
+            center: [12.5683, 55.6761], zoom: 12
+        });
+        map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+        map.on('load', () => {
+            mapReady = true;
+            $('map-status').classList.add('hidden');
+            if (selectedRoute) drawRouteOnMap(selectedRoute);
+        });
+        map.on('error', () => {
+            $('map-status').textContent = 'Kortet kunne ikke indlæses helt. Du kan stadig se rejsetrin nedenfor.';
+            $('map-status').classList.remove('hidden');
+        });
+    } catch {
+        $('map-status').textContent = 'Kortet er utilgængeligt. Se rejsetrin i rutelisten.';
+    }
 }
 
 function initUI() {
-    const originInput = document.getElementById('origin-input');
-    const destInput = document.getElementById('dest-input');
-    const originAuto = document.getElementById('origin-autocomplete');
-    const destAuto = document.getElementById('dest-autocomplete');
-    
-    setupAutocomplete(originInput, originAuto, (place) => { state.origin = place; });
-    setupAutocomplete(destInput, destAuto, (place) => { state.dest = place; });
-    
-    document.getElementById('swap-btn').addEventListener('click', () => {
-        const temp = state.origin;
-        state.origin = state.dest;
-        state.dest = temp;
-        
-        const tempVal = originInput.value;
-        originInput.value = destInput.value;
-        destInput.value = tempVal;
+    setupAutocomplete('origin');
+    setupAutocomplete('dest');
+    for (const key of ['origin', 'dest']) {
+        $(`clear-${key}`).addEventListener('click', () => {
+            $(`${key}-input`).value = '';
+            $(`${key}-input`).dispatchEvent(new Event('input'));
+            $(`${key}-input`).focus();
+        });
+    }
+    $('swap-btn').addEventListener('click', () => {
+        [state.origin, state.dest] = [state.dest, state.origin];
+        [$('origin-input').value, $('dest-input').value] = [$('dest-input').value, $('origin-input').value];
+        for (const key of ['origin', 'dest']) hideAutocomplete(key);
+        updateClearButtons();
+        if (state.origin && state.dest) triggerSearch();
     });
-    
-    const updateSegBtns = (btns, clickedValue) => {
-        btns.forEach(btn => btn.setAttribute('aria-pressed', btn.value === clickedValue));
-    };
-
-    const prioBtns = document.querySelectorAll('#priority-transit, #priority-driving');
-    prioBtns.forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            state.priority = e.target.value;
-            updateSegBtns(prioBtns, state.priority);
+    $('location-btn').addEventListener('click', () => {
+        if (!navigator.geolocation) return formMessage('Din browser understøtter ikke placering. Indtast et startsted.');
+        $('location-btn').disabled = true;
+        $('location-btn').textContent = 'Finder din placering…';
+        navigator.geolocation.getCurrentPosition(position => {
+            invalidateResults();
+            state.origin = { name: 'Min placering', lat: position.coords.latitude, lon: position.coords.longitude };
+            $('origin-input').value = state.origin.name;
+            updateClearButtons();
+            formMessage();
+            finishLocation();
+        }, () => {
+            formMessage('Kunne ikke hente din placering. Tillad adgang, eller indtast et startsted.');
+            finishLocation();
+        }, { timeout: 10000, maximumAge: 60000 });
+    });
+    function finishLocation() {
+        $('location-btn').disabled = false;
+        $('location-btn').textContent = '↗ Brug min placering';
+    }
+    for (const value of ['transit', 'driving']) {
+        $(`priority-${value}`).addEventListener('click', () => {
+            state.priority = value;
+            for (const v of ['transit', 'driving']) $(`priority-${v}`).setAttribute('aria-pressed', String(v === value));
             if (state.origin && state.dest) triggerSearch();
         });
-    });
-    
-    const timeBtns = document.querySelectorAll('#time-now, #time-later');
-    timeBtns.forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            updateSegBtns(timeBtns, e.target.value);
-            if (e.target.value === 'later') {
-                const picker = document.getElementById('time-picker');
-                picker.classList.remove('hidden');
-                try { picker.showPicker(); } catch(err){}
+    }
+    for (const value of ['now', 'later']) {
+        $(`time-${value}`).addEventListener('click', () => {
+            state.later = value === 'later';
+            for (const v of ['now', 'later']) $(`time-${v}`).setAttribute('aria-pressed', String(v === value));
+            $('scheduled-time').classList.toggle('hidden', !state.later);
+            if (state.later) {
+                $('time-picker').focus();
             } else {
-                document.getElementById('time-picker').classList.add('hidden');
-                state.timeIso = new Date().toISOString();
+                formMessage();
                 if (state.origin && state.dest) triggerSearch();
             }
         });
+    }
+    $('time-picker').addEventListener('change', () => {
+        const value = $('time-picker').value;
+        if (!value) { $('time-summary').textContent = ''; return; }
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return;
+        state.timeIso = date.toISOString();
+        $('time-summary').textContent = date.toLocaleString('da-DK', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        if (state.origin && state.dest) triggerSearch();
     });
-    
-    document.getElementById('time-picker').addEventListener('change', (e) => {
-        if (e.target.value) {
-            state.timeIso = new Date(e.target.value).toISOString();
-            if (state.origin && state.dest) triggerSearch();
-        }
-    });
-    
-    const $ = (s) => document.querySelector(s);
-    $("#plan-form").addEventListener("submit", (e) => {
-        e.preventDefault();
-        triggerSearch();
-    });
-    
-    window.addEventListener('online', () => document.getElementById('offline-banner').classList.add('hidden'));
-    window.addEventListener('offline', () => document.getElementById('offline-banner').classList.remove('hidden'));
-    
+    $('plan-form').addEventListener('submit', event => { event.preventDefault(); triggerSearch(); });
+    $('retry-btn').addEventListener('click', triggerSearch);
+    const updateOnline = () => $('offline-banner').classList.toggle('hidden', navigator.onLine);
+    window.addEventListener('online', updateOnline);
+    window.addEventListener('offline', updateOnline);
+    updateOnline();
     setupBottomSheet();
 }
 
-function setupAutocomplete(inputEl, listEl, onSelect) {
-    inputEl.addEventListener('input', (e) => {
-        clearTimeout(debounceTimer);
-        const query = e.target.value;
-        
-        if (query.length < 2) {
-            listEl.classList.add('hidden');
-            return;
-        }
-        
-        debounceTimer = setTimeout(async () => {
-            const results = await geocode(query);
-            renderAutocomplete(results, listEl, inputEl, onSelect);
-        }, 250);
-    });
-    
-    inputEl.addEventListener('keydown', (e) => {
-        const items = listEl.querySelectorAll('li');
-        if (items.length === 0 || listEl.classList.contains('hidden')) return;
-        
-        let activeIndex = Array.from(items).findIndex(item => item.classList.contains('active'));
-        
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            activeIndex = activeIndex < items.length - 1 ? activeIndex + 1 : 0;
-            updateActiveItem(items, activeIndex);
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            activeIndex = activeIndex > 0 ? activeIndex - 1 : items.length - 1;
-            updateActiveItem(items, activeIndex);
-        } else if (e.key === 'Enter') {
-            if (activeIndex >= 0) {
-                e.preventDefault();
-                items[activeIndex].click();
-            }
-        } else if (e.key === 'Escape') {
-            listEl.classList.add('hidden');
-        }
-    });
-    
-    function updateActiveItem(items, index) {
-        items.forEach((item, i) => {
-            if (i === index) {
-                item.classList.add('active');
-                item.setAttribute('aria-selected', 'true');
-                item.scrollIntoView({ block: 'nearest' });
-            } else {
-                item.classList.remove('active');
-                item.setAttribute('aria-selected', 'false');
-            }
-        });
-    }
+function hideAutocomplete(key) {
+    $(`${key}-autocomplete`).classList.add('hidden');
+    $(`${key}-input`).setAttribute('aria-expanded', 'false');
+    $(`${key}-input`).removeAttribute('aria-activedescendant');
+}
 
-    document.addEventListener('click', (e) => {
-        if (!inputEl.contains(e.target) && !listEl.contains(e.target)) {
-            listEl.classList.add('hidden');
+function setupAutocomplete(key) {
+    const input = $(`${key}-input`);
+    const list = $(`${key}-autocomplete`);
+    let timer;
+    let version = 0;
+    function renderSuggestions(results, status = '') {
+        list.replaceChildren();
+        results.forEach((place, index) => {
+            const option = document.createElement('li');
+            option.setAttribute('role', 'option');
+            option.id = `${key}-option-${index}`;
+            option.setAttribute('aria-selected', 'false');
+            option.textContent = [place.name, place.context].filter(Boolean).join(' · ');
+            option.addEventListener('click', () => {
+                ++version;
+                clearTimeout(timer);
+                input.value = place.name;
+                state[key] = place;
+                hideAutocomplete(key);
+                updateClearButtons();
+            });
+            list.append(option);
+        });
+        if (status) {
+            const message = document.createElement('li');
+            message.className = 'autocomplete-status';
+            message.setAttribute('role', 'status');
+            message.textContent = status;
+            list.append(message);
         }
+        list.classList.remove('hidden');
+        input.setAttribute('aria-expanded', 'true');
+        input.removeAttribute('aria-activedescendant');
+    }
+    function lookup() {
+        clearTimeout(timer);
+        const request = ++version;
+        const query = input.value.trim();
+        hideAutocomplete(key);
+        if (query.length < 2) return;
+        renderSuggestions(searchLocalPlaces(query), 'Søger efter adresser…');
+        timer = setTimeout(async () => {
+            const results = await geocode(query);
+            if (request !== version) return;
+            const status = results.lookupUnavailable
+                ? 'Adressesøgning er utilgængelig. Prøv en station som København H, Østerport eller Lyngby.'
+                : !results.length ? 'Ingen adresser fundet. Prøv et stationsnavn eller en anden adresse.' : '';
+            renderSuggestions(results, status);
+        }, 250);
+    }
+    input.addEventListener('input', () => {
+        state[key] = null;
+        invalidateResults();
+        formMessage();
+        updateClearButtons();
+        lookup();
+    });
+    input.addEventListener('focus', lookup);
+    input.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { ++version; hideAutocomplete(key); return; }
+        if (list.classList.contains('hidden')) return;
+        const items = [...list.querySelectorAll('[role="option"]')];
+        if (!items.length) return;
+        let index = items.findIndex(item => item.getAttribute('aria-selected') === 'true');
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            index = event.key === 'ArrowDown' ? (index + 1) % items.length : (index <= 0 ? items.length - 1 : index - 1);
+            items.forEach((item, i) => { item.classList.toggle('active', i === index); item.setAttribute('aria-selected', String(i === index)); });
+            input.setAttribute('aria-activedescendant', items[index].id);
+            items[index].scrollIntoView({ block: 'nearest' });
+        } else if (event.key === 'Enter' && index >= 0) {
+            event.preventDefault();
+            items[index].click();
+        }
+    });
+    document.addEventListener('click', event => {
+        if (!input.contains(event.target) && !list.contains(event.target)) { ++version; hideAutocomplete(key); }
     });
 }
 
 function setupBottomSheet() {
-    const panel = document.getElementById('panel');
-    const handleWrapper = document.querySelector('.panel-handle-wrapper');
-    if (!handleWrapper || window.innerWidth >= 768) return;
-    
-    let startY = 0;
-    let currentTranslate = window.innerHeight * 0.4; // half by default? No, let's start at full?
-    
-    // Actually, prompt says "must leave the map visible". Let's default to half or peek on start if map has route?
-    // Let's just implement the drag logic.
-    const getSnapPoints = () => [0, window.innerHeight * 0.4, window.innerHeight * 0.7];
-    
-    handleWrapper.addEventListener('touchstart', (e) => {
-        startY = e.touches[0].clientY;
+    const panel = $('panel');
+    const handle = $('panel-handle');
+    const mobile = window.matchMedia('(max-width: 767px)');
+    const points = () => ({ expanded: 0, half: Math.max(0, Math.round(panel.offsetHeight - innerHeight * .55)), collapsed: Math.max(0, panel.offsetHeight - 72) });
+    setSheet = (position) => {
+        sheetPosition = position;
+        panel.style.transform = mobile.matches ? `translateY(${points()[position]}px)` : '';
+        $('map-toggle').textContent = position === 'collapsed' ? 'Vis ruter' : 'Vis kort';
+        handle.setAttribute('aria-expanded', String(position === 'expanded'));
+        handle.setAttribute('aria-label', position === 'expanded' ? 'Formindsk rejsepanelet' : 'Udvid rejsepanelet');
+        if (selectedRoute) drawRouteOnMap(selectedRoute);
+    };
+    handle.addEventListener('click', () => setSheet(sheetPosition === 'expanded' ? 'half' : 'expanded'));
+    $('map-toggle').addEventListener('click', () => setSheet(sheetPosition === 'collapsed' ? 'half' : 'collapsed'));
+    let startY;
+    let startTranslate;
+    let dragged = false;
+    handle.addEventListener('pointerdown', event => {
+        if (!mobile.matches) return;
+        startY = event.clientY;
+        startTranslate = points()[sheetPosition];
+        dragged = false;
+        handle.setPointerCapture(event.pointerId);
         panel.style.transition = 'none';
-    }, {passive: true});
-    
-    handleWrapper.addEventListener('touchmove', (e) => {
-        const delta = e.touches[0].clientY - startY;
-        let newTranslate = currentTranslate + delta;
-        if (newTranslate < 0) newTranslate = 0;
-        panel.style.transform = `translateY(${newTranslate}px)`;
-    }, {passive: true});
-    
-    handleWrapper.addEventListener('touchend', (e) => {
-        panel.style.transition = 'transform 0.3s ease';
-        const finalTranslate = parseFloat(panel.style.transform.replace('translateY(', '').replace('px)', '')) || 0;
-        
-        const snaps = getSnapPoints();
-        let closest = snaps[0];
-        let minDiff = Math.abs(finalTranslate - snaps[0]);
-        for(let i = 1; i < snaps.length; i++) {
-            const diff = Math.abs(finalTranslate - snaps[i]);
-            if (diff < minDiff) {
-                minDiff = diff;
-                closest = snaps[i];
-            }
+    });
+    handle.addEventListener('pointermove', event => {
+        if (startY === undefined) return;
+        const delta = event.clientY - startY;
+        dragged ||= Math.abs(delta) > 5;
+        panel.style.transform = `translateY(${Math.max(0, Math.min(points().collapsed, startTranslate + delta))}px)`;
+    });
+    const finish = event => {
+        if (startY === undefined) return;
+        const value = Math.max(0, Math.min(points().collapsed, startTranslate + event.clientY - startY));
+        startY = undefined;
+        panel.style.transition = '';
+        if (dragged) {
+            const closest = Object.entries(points()).sort((a, b) => Math.abs(a[1] - value) - Math.abs(b[1] - value))[0][0];
+            setSheet(closest);
         }
-        
-        currentTranslate = closest;
-        panel.style.transform = `translateY(${currentTranslate}px)`;
-    });
-}
-
-function renderAutocomplete(results, listEl, inputEl, onSelect) {
-    listEl.innerHTML = '';
-    if (results.length === 0) {
-        listEl.classList.add('hidden');
-        return;
-    }
-    
-    results.forEach((res, i) => {
-        const li = document.createElement('li');
-        li.role = 'option';
-        li.id = `option-${Date.now()}-${i}`;
-        li.setAttribute('aria-selected', 'false');
-        li.textContent = `${res.name} (${res.context})`;
-        li.addEventListener('click', () => {
-            inputEl.value = res.name;
-            listEl.classList.add('hidden');
-            onSelect(res);
-        });
-        listEl.appendChild(li);
-    });
-    listEl.classList.remove('hidden');
+    };
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', () => { startY = undefined; panel.style.transition = ''; setSheet(sheetPosition); });
+    handle.addEventListener('click', event => { if (dragged) { event.stopImmediatePropagation(); dragged = false; } }, true);
+    window.addEventListener('resize', () => { map?.resize(); setSheet(sheetPosition); });
+    setSheet('half');
 }
 
 async function triggerSearch() {
-    if (!state.origin || !state.dest) return;
-    
+    const version = ++searchVersion;
+    // Invalidate an old request even when the new form is incomplete.
+    $('results-container').setAttribute('aria-busy', 'false');
+    $('search-btn').disabled = false;
+    $('search-btn').textContent = 'Find rejse';
+    if (!state.origin || !state.dest) {
+        formMessage('Vælg start og destination fra adresseforslagene, før du søger.');
+        $(!state.origin ? 'origin-input' : 'dest-input').focus();
+        return;
+    }
+    if (state.later && (!$('time-picker').value || new Date(state.timeIso) < new Date())) {
+        formMessage('Vælg en afgangstid i fremtiden.');
+        $('time-picker').focus();
+        return;
+    }
+    if (!state.later) state.timeIso = new Date().toISOString();
+    formMessage();
     showState('loading');
-    
+    setSheet('half');
     try {
         const routes = await fetchRoutes(state.origin, state.dest, state.timeIso);
-        
-        if (routes.length === 0) {
-            showState('error', 'Ingen ruter fundet.');
-            return;
-        }
-        
+        if (version !== searchVersion) return;
+        if (!routes.length) { showState('error', 'Ingen ruter fundet. Prøv en anden destination eller afgangstid.'); return; }
         renderRoutes(routes);
         showState('results');
-    } catch(e) {
-        console.error('route search failed', e);
-        showState('error', 'Kunne ikke hente ruter.');
+        $('results-status').textContent = `${Math.min(routes.length, 4)} rejser fundet. Den anbefalede rejse vises på kortet.`;
+    } catch (error) {
+        if (version === searchVersion) showState('error', 'Kunne ikke hente ruter. Kontrollér din forbindelse, og prøv igen.');
     }
 }
 
-function showState(st, msg) {
-    document.getElementById('empty-state').classList.add('hidden');
-    document.getElementById('loading-state').classList.add('hidden');
-    document.getElementById('error-state').classList.add('hidden');
-    document.getElementById('routes-content').classList.add('hidden');
-    
-    if (st === 'loading') document.getElementById('loading-state').classList.remove('hidden');
-    if (st === 'error') {
-        document.getElementById('error-state').classList.remove('hidden');
-        if (msg) document.getElementById('error-msg').textContent = msg;
-    }
-    if (st === 'results') document.getElementById('routes-content').classList.remove('hidden');
-}
-
-function scoreAndRankRoutes(routes) {
-    return routes.sort((a, b) => {
-        if (state.priority === 'transit') {
-            // public transport first, then lowest fillScore (least crowded), tie break duration
-            if (a.type === 'transit' && b.type !== 'transit') return -1;
-            if (a.type !== 'transit' && b.type === 'transit') return 1;
-            if (a.fillScore !== b.fillScore) return a.fillScore - b.fillScore;
-            return a.duration - b.duration;
-        } else {
-            // prioritize driving, then best parking score (which is inverted in fillScore)
-            if (a.type === 'driving' && b.type !== 'driving') return -1;
-            if (a.type !== 'driving' && b.type === 'driving') return 1;
-            if (a.fillScore !== b.fillScore) return a.fillScore - b.fillScore;
-            return a.duration - b.duration;
-        }
-    });
+function showState(value, message) {
+    for (const id of ['empty-state', 'loading-state', 'error-state', 'routes-content']) $(id).classList.add('hidden');
+    const id = { empty: 'empty-state', loading: 'loading-state', error: 'error-state', results: 'routes-content' }[value];
+    if (id) $(id).classList.remove('hidden');
+    const loading = value === 'loading';
+    $('results-container').setAttribute('aria-busy', String(loading));
+    $('search-btn').disabled = loading;
+    $('search-btn').textContent = loading ? 'Finder rejser…' : 'Find rejse';
+    if (message) { $('error-msg').textContent = message; $('results-status').textContent = message; }
+    if (loading) $('results-status').textContent = 'Finder rejser…';
 }
 
 function renderRoutes(routes) {
-    const ranked = scoreAndRankRoutes(routes);
-    const recommended = ranked[0];
-    const alternatives = ranked.slice(1, 4);
-    
-    const recContainer = document.getElementById('recommended-route');
-    recContainer.innerHTML = '';
-    recContainer.appendChild(createRouteCard(recommended, true));
-    
-    const altContainer = document.getElementById('alternative-routes');
-    altContainer.innerHTML = '';
-    alternatives.forEach(alt => {
-        altContainer.appendChild(createRouteCard(alt, false));
+    const ranked = [...routes].sort((a, b) => {
+        const preferred = state.priority === 'transit' ? 'transit' : 'driving';
+        if ((a.type === preferred) !== (b.type === preferred)) return a.type === preferred ? -1 : 1;
+        return a.fillScore - b.fillScore || a.duration - b.duration;
     });
-    
-    drawRouteOnMap(recommended);
+    $('recommended-route').replaceChildren(createRouteCard(ranked[0], ranked[0], 0, ranked));
+    $('alternative-routes').replaceChildren(...ranked.slice(1, 4).map((route, index) => createRouteCard(route, ranked[0], index + 1)));
+    selectRoute(ranked[0], $('recommended-route').firstElementChild);
 }
 
-function createRouteCard(route, isRecommended) {
-    const tpl = document.getElementById('tpl-route-card');
-    const node = tpl.content.cloneNode(true);
-    const card = node.querySelector('.route-card');
-    
-    // Modes
-    const modeTranslations = { 'BUS': 'Bus', 'TRAM': 'Letbane', 'RAIL': 'Tog', 'SUBWAY': 'Metro', 'FERRY': 'Færge' };
-    const modesContainer = node.querySelector('.route-modes');
-    if (route.type === 'driving') {
-        modesContainer.innerHTML = `<span class="mode-chip" style="background:#4C8DFF; color: white;">Bil</span>`;
-    } else {
-        const chipsHTML = route.legs.filter(l => l.mode !== 'WALK').map(l => {
-            const text = l.routeShortName || modeTranslations[l.mode] || l.mode;
-            const color = l.routeColor ? `#${l.routeColor}` : '#FF3B30';
-            return `<span class="mode-chip" style="background:${color}; color: white;">${text}</span>`;
-        });
-        if (chipsHTML.length === 0) chipsHTML.push(`<span class="mode-chip" style="background:#9CA3AF; color: white;">Gå</span>`);
-        modesContainer.innerHTML = chipsHTML.join('');
-    }
-    
-    // Reason
-    const reasonEl = node.querySelector('.route-reason');
+function selectRoute(route, card) {
+    selectedRoute = route;
+    document.querySelectorAll('.route-card').forEach(item => {
+        const selected = item === card;
+        item.classList.toggle('selected', selected);
+        item.querySelector('.selected-badge').classList.toggle('hidden', !selected);
+    });
+    drawRouteOnMap(route);
+}
+
+function createRouteCard(route, recommended, index, routes = []) {
+    const card = $('tpl-route-card').content.firstElementChild.cloneNode(true);
+    const isRecommended = index === 0;
+    card.classList.toggle('recommended', isRecommended);
+    card.querySelector('.recommendation-badge').classList.toggle('hidden', !isRecommended);
+    const modes = route.type === 'driving' ? [{ mode: 'CAR' }] : route.legs.filter(leg => leg.mode !== 'WALK');
+    if (!modes.length) modes.push({ mode: 'WALK' });
+    modes.forEach(leg => {
+        const chip = document.createElement('span');
+        chip.className = 'mode-chip';
+        chip.textContent = leg.routeShortName || modeNames[leg.mode] || leg.name;
+        chip.style.background = '#334155';
+        card.querySelector('.route-modes').append(chip);
+    });
+    card.querySelector('.time-val').textContent = route.duration;
+    const start = route.startTime || state.timeIso;
+    const end = route.endTime || new Date(new Date(start).getTime() + route.duration * 60000);
+    card.querySelector('.route-departure').textContent = `Ankomst ${clock(end)}`;
+    card.querySelector('.route-summary').textContent = `${clock(start)} → ${clock(end)} · ${walking(route)} min gang · ${route.transfers || 0} skift`;
+    const difference = route.duration - recommended.duration;
+    const comparison = card.querySelector('.route-comparison');
+    if (!isRecommended) {
+        const time = difference === 0 ? 'Samme rejsetid' : `${Math.abs(difference)} min ${difference < 0 ? 'hurtigere' : 'længere'}`;
+        const transfers = (route.transfers || 0) - (recommended.transfers || 0);
+        comparison.textContent = `${time} end anbefalingen${transfers > 0 ? ` · ${transfers} ekstra skift` : ''}`;
+        if (route.type === recommended.type && route.type === 'transit') {
+            const fill = route.fillScore - recommended.fillScore;
+            if (fill) comparison.textContent += ` · ${Math.abs(fill)} procentpoint ${fill > 0 ? 'mere' : 'mindre'} fyldt`;
+        }
+    } else comparison.classList.add('hidden');
+    const reason = card.querySelector('.route-reason');
     if (isRecommended) {
-        if (state.priority === 'transit' && route.type === 'transit') {
-            const transitModes = route.legs.filter(l => l.mode !== 'WALK').map(l => l.routeShortName || modeTranslations[l.mode] || l.mode).join(' + ');
-            reasonEl.textContent = `${transitModes || 'Rute'} er ${route.fillScore}% fyldt - ${route.duration} min, ${route.transfers || 0} skift, ingen parkeringsrisiko`;
-        } else if (state.priority === 'driving' && route.type === 'driving') {
-            reasonEl.textContent = `Bil er bedst - ${route.duration} min, ${route.parkingAvail}% ledige pladser`;
-        } else {
-             reasonEl.textContent = `Bedste valg - ${route.duration} min`;
-        }
-    } else {
-        reasonEl.textContent = route.type === 'driving' ? `Parkering: ${route.parkingAvail}% ledigt` : `${route.transfers || 0} skift, ${route.duration} min`;
-    }
-    
-    // Time
-    node.querySelector('.time-val').textContent = route.duration;
-    
-    if (route.startTime) {
-        const d = new Date(route.startTime);
-        node.querySelector('.route-departure').textContent = `Afgang ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-    }
-    
-    // Fill bar
-    const bar = node.querySelector('.fill-bar');
-    let score = route.fillScore;
-    if (route.type === 'driving') score = 100 - route.parkingAvail; // reverse for visual (red = bad)
-    
+        const preferred = state.priority === 'transit' ? 'transit' : 'driving';
+        const fastest = routes.filter(item => item.type === route.type).sort((a, b) => a.duration - b.duration)[0];
+        const extra = fastest ? route.duration - fastest.duration : 0;
+        if (route.type !== preferred) reason.textContent = 'Bedste tilgængelige rejse. Din foretrukne transportform blev ikke fundet.';
+        else if (extra > 0) reason.textContent = `${extra} min længere, men ${route.type === 'driving' ? 'mere ledig parkering' : 'mindre trængsel'}.`;
+        else reason.textContent = route.type === 'driving' ? 'Prioriteret for ledig parkering ved destinationen.' : 'Prioriteret for mindre trængsel på rejsen.';
+    } else reason.textContent = route.type === 'driving' ? 'Kør til destinationen' : 'Offentlig transport';
+    const score = route.type === 'driving' ? 100 - route.parkingAvail : route.fillScore;
+    const level = score < 50 ? 'Lav' : score < 75 ? 'Moderat' : score < 90 ? 'Høj' : 'Meget høj';
+    card.querySelector('.capacity-label').textContent = route.type === 'driving' ? `Parkering · ${route.parkingAvail}% ledige pladser` : `Trængsel · ${route.fillScore}% fyldt · ${level}`;
+    const bar = card.querySelector('.fill-bar');
     bar.style.width = `${Math.min(100, Math.max(0, score))}%`;
-    if (score < 40) bar.classList.add('fill-green');
-    else if (score < 75) bar.classList.add('fill-amber');
-    else bar.classList.add('fill-red');
-    
-    // Expand timeline
-    const timeline = node.querySelector('.leg-timeline');
+    bar.classList.add(score < 50 ? 'fill-green' : score < 75 ? 'fill-amber' : 'fill-red');
+    const timeline = card.querySelector('.leg-timeline');
+    timeline.id = `timeline-${index}`;
+    let elapsed = 0;
     route.legs.forEach(leg => {
-        const lNode = document.getElementById('tpl-leg-step').content.cloneNode(true);
-        if (leg.startTime) {
-             const d = new Date(leg.startTime);
-             lNode.querySelector('.leg-time').textContent = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-        }
-        const legTitle = leg.routeShortName || { 'BUS': 'Bus', 'TRAM': 'Letbane', 'RAIL': 'Tog', 'SUBWAY': 'Metro', 'FERRY': 'Færge' }[leg.mode] || leg.name;
-        lNode.querySelector('.leg-title').textContent = legTitle;
-        lNode.querySelector('.leg-desc').textContent = `${leg.duration} min • ${leg.mode === 'WALK' ? 'Gå' : 'Tag'} til ${leg.toName || 'Destination'}`;
-        timeline.appendChild(lNode);
+        const step = $('tpl-leg-step').content.cloneNode(true);
+        step.querySelector('.leg-time').textContent = clock(leg.startTime || new Date(new Date(start).getTime() + elapsed * 60000));
+        step.querySelector('.leg-title').textContent = leg.routeShortName || modeNames[leg.mode] || leg.name;
+        step.querySelector('.leg-desc').textContent = `${leg.duration} min · ${leg.mode === 'WALK' ? 'Gå' : leg.mode === 'CAR' ? 'Kør' : 'Tag'} til ${leg.toName || state.dest.name}`;
+        timeline.append(step);
+        elapsed += leg.duration;
     });
-    
-    card.addEventListener('click', () => {
-        timeline.classList.toggle('hidden');
-        drawRouteOnMap(route);
+    const expand = card.querySelector('.route-expand');
+    expand.setAttribute('aria-controls', timeline.id);
+    expand.setAttribute('aria-label', `Vis rejsetrin for ${route.duration} minutters rejse`);
+    expand.addEventListener('click', () => {
+        const open = expand.getAttribute('aria-expanded') !== 'true';
+        timeline.classList.toggle('hidden', !open);
+        expand.setAttribute('aria-expanded', String(open));
+        expand.querySelector('span').textContent = open ? 'Skjul rejsetrin' : 'Vis rejsetrin';
+        expand.setAttribute('aria-label', `${open ? 'Skjul' : 'Vis'} rejsetrin for ${route.duration} minutters rejse`);
+        selectRoute(route, card);
     });
-    
+    card.addEventListener('click', event => { if (!event.target.closest('button')) selectRoute(route, card); });
     return card;
 }
 
-function drawRouteOnMap(route) {
-    if (!map) return;
-    
-    // Clear old layers
-    routeLayers.forEach(id => {
-        if (map.getLayer(id)) map.removeLayer(id);
-        if (map.getSource(id)) map.removeSource(id);
+function clearMapRoute() {
+    if (!map || !mapReady) return;
+    routeLayers.forEach(({ layer, source }) => {
+        if (map.getLayer(layer)) map.removeLayer(layer);
+        if (map.getSource(source)) map.removeSource(source);
     });
     routeLayers = [];
-    mapMarkers.forEach(m => m.remove());
+    mapMarkers.forEach(marker => marker.remove());
     mapMarkers = [];
-    
+}
+
+function drawRouteOnMap(route) {
+    if (!map || !mapReady) return;
+    clearMapRoute();
     const bounds = new maplibregl.LngLatBounds();
-    
-    if (state.origin) {
-        const el = document.createElement('div');
-        el.className = 'map-marker origin-marker';
-        const m = new maplibregl.Marker(el).setLngLat([state.origin.lon, state.origin.lat]).addTo(map);
-        mapMarkers.push(m);
-        bounds.extend([state.origin.lon, state.origin.lat]);
+    for (const key of ['origin', 'dest']) {
+        const place = state[key];
+        if (!place) continue;
+        const element = document.createElement('div');
+        element.className = `map-marker ${key}-marker`;
+        element.setAttribute('aria-label', place.name);
+        const coordinates = [place.lon, place.lat];
+        mapMarkers.push(new maplibregl.Marker(element).setLngLat(coordinates).addTo(map));
+        bounds.extend(coordinates);
     }
-    if (state.dest) {
-        const el = document.createElement('div');
-        el.className = 'map-marker dest-marker';
-        const m = new maplibregl.Marker(el).setLngLat([state.dest.lon, state.dest.lat]).addTo(map);
-        mapMarkers.push(m);
-        bounds.extend([state.dest.lon, state.dest.lat]);
-    }
-    
-    route.legs.forEach((leg, i) => {
-        if (!leg.geometry || leg.geometry.length === 0) return;
-        
-        const sourceId = `route-src-${i}`;
-        const layerId = `route-layer-${i}`;
-        
-        // geometry is array of [lng, lat]
-        const lineString = {
-            type: 'Feature',
-            geometry: {
-                type: 'LineString',
-                coordinates: leg.geometry
-            }
-        };
-        
-        leg.geometry.forEach(coord => {
-            bounds.extend(coord);
-        });
-        
-        map.addSource(sourceId, {
-            type: 'geojson',
-            data: lineString
-        });
-        
-        let color = leg.mode === 'WALK' ? '#9CA3AF' : (leg.mode === 'CAR' ? '#4C8DFF' : '#FF3B30');
-        
-        map.addLayer({
-            id: layerId,
-            type: 'line',
-            source: sourceId,
-            layout: {
-                'line-join': 'round',
-                'line-cap': 'round'
-            },
-            paint: {
-                'line-color': color,
-                'line-width': 4,
-                'line-dasharray': leg.mode === 'WALK' ? [2, 2] : [1]
-            }
-        });
-        
-        routeLayers.push(sourceId, layerId);
+    route.legs.forEach((leg, index) => {
+        if (!leg.geometry?.length) return;
+        const source = `route-src-${index}`;
+        const layer = `route-layer-${index}`;
+        leg.geometry.forEach(coordinates => bounds.extend(coordinates));
+        map.addSource(source, { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: leg.geometry } } });
+        const color = leg.mode === 'WALK' ? '#64748B' : leg.mode === 'CAR' ? '#2563EB' : /^([0-9a-f]{6})$/i.test(leg.routeColor || '') ? `#${leg.routeColor}` : '#DC2626';
+        map.addLayer({ id: layer, type: 'line', source, layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': color, 'line-width': 5, ...(leg.mode === 'WALK' ? { 'line-dasharray': [2, 2] } : {}) } });
+        routeLayers.push({ source, layer });
     });
-    
     if (!bounds.isEmpty()) {
-        map.fitBounds(bounds, { padding: 40, animate: true });
+        const mobile = innerWidth < 768;
+        const visibleHeight = Math.max(100, $('panel').getBoundingClientRect().top);
+        const bottom = mobile ? Math.min(map.getContainer().clientHeight - 100, Math.max(40, innerHeight - visibleHeight + 20)) : 40;
+        map.fitBounds(bounds, { padding: { top: 50, left: 40, right: 50, bottom }, maxZoom: 15, duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 350 });
     }
 }
 
 function registerServiceWorker() {
-    if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-            navigator.serviceWorker.register('/sw.js').catch(err => {
-                console.log('SW registration failed: ', err);
-            });
-        });
+    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
 }

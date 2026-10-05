@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
@@ -42,6 +44,24 @@ app = FastAPI(
 )
 
 router = APIRouter()
+
+@router.get("/geocode")
+async def geocode_places(q: str = Query(min_length=2, max_length=200)) -> dict:
+    """Proxy address lookup so browser searches do not depend on upstream CORS."""
+    try:
+        async with httpx.AsyncClient(timeout=3.5) as client:
+            response = await client.get(
+                "https://photon.komoot.io/api/",
+                params={"q": q, "limit": 5, "lat": 55.68, "lon": 12.57},
+            )
+            response.raise_for_status()
+            data = response.json()
+        if not isinstance(data, dict) or not isinstance(data.get("features"), list):
+            raise ValueError("Invalid geocoding response")
+        return {"features": data["features"]}
+    except (httpx.HTTPError, ValueError) as error:
+        raise HTTPException(status_code=503, detail="Address lookup unavailable") from error
+
 
 _LIVE_PROVIDER = RealDetectionProvider(fallback=MockDetectionProvider())
 

@@ -1,6 +1,6 @@
 /* Service worker: cache-first app shell, network-first API (cached GETs, then a
  * clear 503 offline JSON). Bump VERSION to invalidate old caches on deploy. */
-var VERSION = "v3";
+var VERSION = "v5";
 var SHELL = "transit-shell-" + VERSION;
 var API = "transit-api-" + VERSION;
 var SHELL_FILES = [
