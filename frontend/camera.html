@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live persontæller — kamera (browser)</title>
+  <link rel="stylesheet" href="camera.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Spring til indhold</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-title">Live persontæller</span>
+        <span class="brand-sub">In-browser COCO-SSD · kun optælling</span>
+      </div>
+      <span class="badge badge-demo" id="sourceBadge">DEMO — lokal i browser</span>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+
+    <!-- Model-loading skeleton -->
+    <section id="loadingPanel" class="panel">
+      <div class="skeleton-row">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Indlæser model…</span>
+      </div>
+      <div class="skeleton-bar"></div>
+      <p class="muted small">TensorFlow.js og COCO-SSD hentes fra CDN. Første indlæsning kan tage nogle sekunder.</p>
+    </section>
+
+    <!-- Error panels -->
+    <section id="errorPanel" class="panel panel-error" hidden>
+      <h2 id="errorTitle" class="err-title">Fejl</h2>
+      <p id="errorMsg" class="err-msg"></p>
+      <p id="errorHint" class="muted small"></p>
+    </section>
+
+    <!-- Main app -->
+    <section id="appPanel" class="grid" hidden>
+
+      <div class="col-video">
+        <div class="controls">
+          <button id="startBtn" class="btn btn-primary" type="button">Start kamera</button>
+          <button id="stopBtn" class="btn btn-ghost" type="button" disabled>Stop kamera</button>
+          <label class="cap-field">
+            Kapacitet
+            <input id="capacityInput" class="cap-input" type="number" min="1" step="1" value="30" inputmode="numeric">
+          </label>
+          <span class="fps" id="fpsReadout" title="Billeder pr. sekund">FPS: —</span>
+        </div>
+
+        <div class="stage">
+          <video id="video" playsinline muted></video>
+          <canvas id="overlay"></canvas>
+          <div id="stageHint" class="stage-hint">Tryk «Start kamera» for at begynde</div>
+        </div>
+      </div>
+
+      <aside class="col-side">
+        <div class="count-card">
+          <div class="count-label">PERSONER (live)</div>
+          <div class="count-value" id="countValue">0</div>
+          <div class="count-cap muted small">af <span id="capEcho">30</span> pladser</div>
+        </div>
+
+        <div class="crowd-card">
+          <div class="crowd-top">
+            <span class="crowd-label">Belægning</span>
+            <span class="crowd-ratio" id="ratioValue">0 %</span>
+          </div>
+          <div class="crowd-bar-track">
+            <div class="crowd-bar-fill" id="crowdBar"></div>
+          </div>
+          <div class="crowd-level" id="crowdLevel" data-level="LAV">LAV</div>
+        </div>
+
+        <div class="thresholds muted small">
+          <span>Tærskler: LAV &lt; 50 % · MODERAT &lt; 75 % · HØJ &lt; 90 % · MEGET HØJ ≥ 90 %</span>
+        </div>
+      </aside>
+    </section>
+
+    <!-- Honesty / accuracy note -->
+    <section class="panel note note-accuracy">
+      <h2 class="note-title">Om nøjagtigheden — læs før du bruger tallet</h2>
+      <p>
+        Denne side kører COCO-SSD i browseren. Modellen returnerer <strong>højst ca. 20 detektioner
+        pr. billede</strong> og <strong>undertæller tætte eller delvist skjulte menneskemængder</strong>:
+        når personer overlapper, fjerner modellens NMS (non-maximum suppression) de overlappende bokse.
+        For et fyldt lokale er tallet derfor <strong>omtrentligt</strong> og typisk for lavt.
+      </p>
+      <p>
+        Den nøjagtige tælling af tætte mængder sker via <strong>GPU-tjenesten i
+        <code>cv_service/</code></strong> (crowd-counting med <code>lwcc</code> / CSRNet / DM-Count).
+        Den kobles sådan: backendens <code>RealDetectionProvider</code> sender et billede til CV-tjenesten
+        med <code>POST /count</code> (<code>CV_SERVICE_URL</code>), og tjenesten svarer med
+        <em>kun antal</em> — ingen billeder, bokse eller identiteter krydser grænsen. Se
+        <code>cv_service/docs/CV_INTEGRATION.md</code>. Brug denne browser-side som demo, ikke som facit.
+      </p>
+    </section>
+
+    <!-- Privacy note -->
+    <section class="panel note note-privacy">
+      <h2 class="note-title">Privatliv</h2>
+      <p>
+        Der tælles <strong>kun personer</strong> — ingen identifikation, ingen ansigtsgenkendelse.
+        Alle billeder behandles <strong>live i din browser</strong>. Intet gemmes, og intet sendes til
+        en server.
+      </p>
+    </section>
+
+  </main>
+
+  <!-- Same CDN + pinned versions as the repo root index.html -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+  <script src="camera.js"></script>
+</body>
+</html>

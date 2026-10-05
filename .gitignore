@@ -1,0 +1,11 @@
+﻿.vercel
+.env
+.env.*
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*/
+temp_test_dir/
+*.backup
+*.broken
+node_modules/

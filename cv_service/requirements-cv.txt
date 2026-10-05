@@ -1,0 +1,50 @@
+# =============================================================================
+# CV counting service dependencies
+# =============================================================================
+# Kept SEPARATE from the backend's requirements so the transport app runs
+# without the CV stack. Install into a dedicated Python 3.10 or 3.11 env
+# (host Python 3.14 is too new for the CV wheels below).
+#
+#   Base tier      -> lets the service BOOT and serve the MOCK path (CPU-only,
+#                     no GPU, no models). This is all the sandbox needs.
+#   Real-inference -> the heavy extras that enable LIVE counts. GPU strongly
+#                     recommended. See the AGPL note before shipping.
+# =============================================================================
+
+# ----------------------------- Base tier -------------------------------------
+# Enough to run the FastAPI service and the mock/fallback path.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pillow==11.1.0
+numpy==2.2.6
+
+# Test tooling (optional at runtime, used by the test suite)
+pytest==8.3.4
+httpx==0.28.1
+
+# ======================= Real-inference extras ===============================
+# EVERYTHING BELOW IS OPTIONAL. The service runs (MOCK) without it. Install on
+# the Windows + NVIDIA box to enable LIVE counts. Uncomment to install.
+#
+# --- Torch (install the CUDA build to match your driver; see docs) ----------
+# On Windows/NVIDIA, prefer the official index, e.g.:
+#   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+# torch==2.5.1
+# torchvision==0.20.1
+#
+# --- (a) Dense crowd counting for PEOPLE — lwcc (MIT) ------------------------
+#     Pretrained CSRNet / DM-Count; downloads weights on first use.
+# lwcc==0.0.4
+#
+# --- (b) Sliced detection for CARS — SAHI (MIT) -----------------------------
+# sahi==0.11.20
+#
+# --- YOLO backend loaded BY SAHI --------------------------------------------
+#     !!! LICENSE WARNING: Ultralytics YOLOv8/YOLOv11 is AGPL-3.0. !!!
+#     Fine for research/internal use; AGPL obligations attach if you ship a
+#     networked product on it. For a permissive alternative, see
+#     docs/CV_INTEGRATION.md ("Licensing") — e.g. a SAHI backend using an
+#     Apache-2.0/MIT detector instead of Ultralytics.
+# ultralytics==8.3.55

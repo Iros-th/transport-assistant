@@ -1,0 +1,9 @@
+tests/
+cv_service/
+gen_demo.py
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*/
+.venv/
+gen_icons.py
