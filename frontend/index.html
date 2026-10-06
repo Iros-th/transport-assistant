@@ -2,33 +2,69 @@
 <html lang="da">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Transport Assistant</title>
-    
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    
+    <meta name="description" content="Rolig rejseplanlægning med kortet først. Ingen reklamer, ingen sporing.">
+
     <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-    
+
     <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="icons/icon-192.png" type="image/png">
     <link rel="manifest" href="manifest.webmanifest">
     <meta name="theme-color" content="#07080A">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <script>
+        /* Apply the saved theme before first paint (no flash). */
+        try { var t = localStorage.getItem('ta.theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+    </script>
 </head>
 <body>
-    <div class="app-container">
-        <!-- Sidebar / Bottom Sheet -->
-        <main class="panel" id="panel">
-            <div class="panel-handle-wrapper" id="panel-handle">
-                <div class="panel-handle"></div>
+    <div class="app-container" id="app">
+        <!-- Map first -->
+        <div class="map-wrap">
+            <div id="map" class="map-container" aria-label="Kort"></div>
+            <div id="map-fallback" class="map-fallback hidden" role="alert">
+                <p><strong>Kortet kunne ikke indlæses.</strong><br>Ruteplanlægningen virker stadig i panelet.</p>
+                <button type="button" id="map-retry" class="secondary-btn">Prøv igen</button>
             </div>
-            <div class="panel-content">
+        </div>
+
+        <div class="map-top">
+            <div id="offline-banner" class="offline-banner hidden" role="status">Du er offline – nye ruter kræver internet.</div>
+            <button type="button" id="area-chip" class="area-chip" aria-live="polite" title="Opdatér områdenavn">
+                <span class="area-icon" aria-hidden="true">&#9906;</span>
+                <span id="area-label">Finder område…</span>
+            </button>
+        </div>
+
+        <div class="map-tools" role="group" aria-label="Kortværktøjer">
+            <button type="button" id="locate-btn" class="tool-btn" aria-label="Brug min position" title="Brug min position (kun når du trykker)">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+            </button>
+            <button type="button" id="theme-btn" class="tool-btn" aria-label="Skift mellem lyst og mørkt tema" title="Lyst / mørkt">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 13.5A8.5 8.5 0 1 1 10.5 3a7 7 0 0 0 10.5 10.5z"/></svg>
+            </button>
+            <a id="report-btn" class="tool-btn" href="https://www.openstreetmap.org/note/new" target="_blank" rel="noopener" aria-label="Rapportér fejl i kortet" title="Rapportér fejl i kortet (OpenStreetMap)">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>
+            </a>
+        </div>
+
+        <!-- Sidebar (desktop) / collapsible bottom sheet (mobile) -->
+        <main class="panel" id="panel" data-sheet="half">
+            <button type="button" class="panel-handle-wrapper" id="panel-handle" aria-expanded="true" aria-controls="panel-content" aria-label="Åbn eller skjul panel">
+                <span class="panel-handle"></span>
+                <span class="sheet-summary" id="sheet-summary">Transport Assistant</span>
+            </button>
+            <div class="panel-content" id="panel-content">
                 <header class="header">
                     <h1 class="logo">Transport Assistant</h1>
-                    <div id="offline-banner" class="hidden">Offline</div>
+                    <label class="switch" title="Færre forespørgsler, simplere ruter, ingen automatisk områdesøgning">
+                        <input type="checkbox" id="lowdata-toggle">
+                        <span class="switch-track" aria-hidden="true"></span>
+                        <span class="switch-text">Lavt dataforbrug</span>
+                    </label>
                 </header>
 
                 <form id="plan-form" class="search-section">
@@ -36,20 +72,20 @@
                         <div class="location-inputs">
                             <div class="input-wrapper">
                                 <div class="dot-origin"></div>
-                                <input type="text" id="origin-input" placeholder="FRA: Nørreport St." autocomplete="off" role="combobox" aria-expanded="false">
-                                <button class="clear-btn" id="clear-origin" aria-label="Clear Origin" hidden>×</button>
+                                <input type="text" id="origin-input" placeholder="FRA: Nørreport St." aria-label="Fra" autocomplete="off" role="combobox" aria-expanded="false">
+                                <button type="button" class="clear-btn" id="clear-origin" aria-label="Ryd start" hidden>×</button>
                                 <ul id="origin-autocomplete" class="autocomplete-list hidden" role="listbox"></ul>
                             </div>
                             <div class="connection-line"></div>
                             <div class="input-wrapper">
                                 <div class="dot-dest"></div>
-                                <input type="text" id="dest-input" placeholder="TIL: DTU Lyngby" autocomplete="off" role="combobox" aria-expanded="false">
-                                <button class="clear-btn" id="clear-dest" aria-label="Clear Destination" hidden>×</button>
+                                <input type="text" id="dest-input" placeholder="TIL: DTU Lyngby" aria-label="Til" autocomplete="off" role="combobox" aria-expanded="false">
+                                <button type="button" class="clear-btn" id="clear-dest" aria-label="Ryd destination" hidden>×</button>
                                 <ul id="dest-autocomplete" class="autocomplete-list hidden" role="listbox"></ul>
                             </div>
                         </div>
-                        <button id="swap-btn" class="icon-btn" aria-label="Swap origin and destination">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8v12M17 20l-4-4M17 20l4-4"/></svg>
+                        <button type="button" id="swap-btn" class="icon-btn" aria-label="Byt start og slut">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8v12M17 20l-4-4M17 20l4-4"/></svg>
                         </button>
                     </div>
 
@@ -65,13 +101,12 @@
                             <button type="button" id="time-now" class="seg-btn" aria-pressed="true" value="now">Nu</button>
                             <button type="button" id="time-later" class="seg-btn" aria-pressed="false" value="later">Vælg tid</button>
                         </div>
-                        <input type="datetime-local" id="time-picker" class="hidden">
+                        <input type="datetime-local" id="time-picker" class="hidden" aria-label="Afgangstid">
+                        <button id="search-btn" class="primary-btn" type="submit">Find rejse</button>
                     </div>
-                    
-                    <button id="search-btn" class="primary-btn" type="submit">Find rejse</button>
                 </form>
 
-                <div id="results-container" class="results-container">
+                <div id="results-container" class="results-container" aria-live="polite">
                     <div id="empty-state" class="state-message">
                         Vælg din start og slut destination.
                     </div>
@@ -79,28 +114,53 @@
                         <div class="skeleton skeleton-card"></div>
                         <div class="skeleton skeleton-card-small"></div>
                     </div>
-                    <div id="error-state" class="state-message hidden">
+                    <div id="error-state" class="state-message error hidden" role="alert">
                         <p id="error-msg">Noget gik galt.</p>
-                        <button id="retry-btn" class="secondary-btn">Prøv igen</button>
+                        <button type="button" id="retry-btn" class="secondary-btn">Prøv igen</button>
                     </div>
-                    
+
                     <div id="routes-content" class="hidden">
+                        <div id="place-heading" class="place-heading"></div>
+                        <div id="transit-notice" class="notice hidden" role="status">
+                            <span id="transit-notice-text"></span>
+                            <button type="button" id="notice-retry" class="secondary-btn">Prøv igen</button>
+                        </div>
                         <div class="results-header">
                             <h2>Anbefalet</h2>
                         </div>
                         <div id="recommended-route"></div>
-                        
+
                         <div class="results-header" style="margin-top: 16px;">
                             <h2>Alternativer</h2>
                         </div>
                         <div id="alternative-routes"></div>
                     </div>
                 </div>
+
+                <footer class="panel-footer">
+                    <p class="promise"><strong>Ingen reklamer, ingen sporing.</strong> Din position bruges kun når du trykker på &#9678;-knappen, gemmes aldrig og sendes kun med ruteforespørgslen.</p>
+                    <p class="fine">
+                        Kort &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &middot; OpenFreeMap &middot; Fyldningsgrad er <em>simuleret</em>.
+                    </p>
+                    <p class="fine">
+                        <a id="report-link" href="https://www.openstreetmap.org/note/new" target="_blank" rel="noopener">Rapportér fejl i kortet</a>
+                        &middot; <button type="button" id="reset-btn" class="link-btn">Nulstil app og cache</button>
+                    </p>
+                </footer>
             </div>
         </main>
-        
-        <!-- Map -->
-        <div id="map" class="map-container"></div>
+    </div>
+
+    <!-- Lær ruten -->
+    <div id="learn" class="learn hidden" role="dialog" aria-modal="true" aria-labelledby="learn-title">
+        <div class="learn-card">
+            <div class="learn-head">
+                <h2 id="learn-title">Lær ruten</h2>
+                <button type="button" id="learn-close" class="icon-btn" aria-label="Luk">×</button>
+            </div>
+            <div id="learn-map" class="learn-map"></div>
+            <ol id="learn-steps" class="learn-steps"></ol>
+        </div>
     </div>
 
     <!-- Templates -->
@@ -116,6 +176,8 @@
                     <div class="route-departure mono"></div>
                 </div>
             </div>
+            <div class="walk-line"></div>
+            <div class="walk-warning hidden" role="note"></div>
             <div class="fill-bar-wrapper">
                 <div class="fill-bar-label">
                     <span>Forventet kapacitet</span>
@@ -126,9 +188,13 @@
                 </div>
             </div>
             <div class="leg-timeline hidden"></div>
+            <div class="card-actions">
+                <button type="button" class="secondary-btn learn-btn">Lær ruten</button>
+            </div>
+            <div class="source-line"></div>
         </div>
     </template>
-    
+
     <template id="tpl-leg-step">
         <div class="leg-step">
             <div class="leg-time mono"></div>
@@ -143,7 +209,6 @@
         </div>
     </template>
 
-    <script src="api.js" type="module"></script>
     <script src="app.js" type="module"></script>
 </body>
 </html>
